@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 #include <stdio.h>
 #include <string.h>
+#include "math.h"
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -23,6 +24,7 @@
 
 
 // Объявление функции обратного вызова для цикла полета
+void MyHotKeyCallback(void *inRefcon);
 float MyFlightLoopCallback(float inElapsedSinceLastCall,
                            float inElapsedTimeSinceLastFlightLoop,
                            int inCounter,
@@ -31,8 +33,12 @@ float MyFlightLoopCallback(float inElapsedSinceLastCall,
 static XPLMDataRef gPlaneX = NULL;
 static XPLMDataRef gPlaneY = NULL;
 static XPLMDataRef gPlaneZ = NULL;
+static XPLMDataRef gPlaneQ = NULL;
+static XPLMHotKeyID	gHotKey = NULL;
+
 
 int server_fd = 0;
+float pi  = 3.14159265359;
 struct sockaddr_in serv_addr;
 
 // Функция обратного вызова для цикла полета
@@ -41,30 +47,35 @@ float MyFlightLoopCallback(float inElapsedSinceLastCall,
                            int inCounter, void *inRefcon){
     // Буфер для приема данных
     char buffer[1024] = {0};
-
     // Принимаем данные через сокетное соединение
     int valread = read(server_fd, buffer, 1024);
-
     // Проверяем результат чтения данных
     if (valread > 0){
         // Данные были прочитаны - парсим их
-        float x, y, z;
-        int n = sscanf(buffer, "%f,%f,%f\n", &x, &y, &z);
-        if (n == 3) {
+        float x, y, z, psi, theta, phi;
+        float q[4] = {0};
+        int n = sscanf(buffer, "%f,%f,%f,%f,%f,%f\n", &x, &y, &z, &psi, &theta, &phi);
+        if (n == 6) {
             printf("Прочитано данных %d\n", n);
             printf("x = %f,\n y=%f,\n z=%f,\n\n", x, y, z);
+            printf("psi = %f,\n theta=%f,\n phi=%f,\n\n", psi, theta, phi);
             // Устанавливаем новое положение самолета
             XPLMSetDataf(gPlaneX, x);
             XPLMSetDataf(gPlaneY, y);
             XPLMSetDataf(gPlaneZ, z);
+            float psi_rad = pi / 360 * psi;
+            float theta_rad = pi / 360 * theta;
+            float phi_rad = pi / 360 * phi;
+            q[0] =  cos(psi_rad) * cos(theta_rad) * cos(phi_rad) + sin(psi_rad) * sin(theta_rad) * sin(phi_rad);
+            q[1] =  cos(psi_rad) * cos(theta_rad) * sin(phi_rad) - sin(psi_rad) * sin(theta_rad) * cos(phi_rad);
+            q[2] =  cos(psi_rad) * sin(theta_rad) * cos(phi_rad) + sin(psi_rad) * cos(theta_rad) * sin(phi_rad);
+            q[3] = -cos(psi_rad) * sin(theta_rad) * sin(phi_rad) + sin(psi_rad) * cos(theta_rad) * cos(phi_rad);
+            XPLMSetDatavf(gPlaneQ, q, 0, 4);
         }
-        else{
-            printf("НЕВЕРНО ОТПРАВЛЕННЫ ДАННЫЕ %d\n", n);
-        }
+        else{ printf("НЕВЕРНО ОТПРАВЛЕННЫ ДАННЫЕ %d\n", n); }
     }
     // Возвращаем время до следующего вызова функции (в секундах)
-    return -1.0;
-}
+    return -1.0;}
 
 PLUGIN_API int XPluginStart(char *outName, char *outSig, char *outDesc) {
     // Задаем имя, сигнатуру и описание плагина
@@ -77,6 +88,9 @@ PLUGIN_API int XPluginStart(char *outName, char *outSig, char *outDesc) {
     gPlaneX = XPLMFindDataRef("sim/flightmodel/position/local_x");
     gPlaneY = XPLMFindDataRef("sim/flightmodel/position/local_y");
     gPlaneZ = XPLMFindDataRef("sim/flightmodel/position/local_z");
+    gPlaneQ = XPLMFindDataRef("sim/flightmodel/position/q");
+
+
 
     // Создаем сокет сервера
     if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
@@ -115,9 +129,15 @@ PLUGIN_API int XPluginStart(char *outName, char *outSig, char *outDesc) {
     XPLMDebugString(buffer);
     send(server_fd, buffer, strlen(buffer), 0);
     // Регистрируем функцию обратного вызова для цикла полета
-    XPLMRegisterFlightLoopCallback(MyFlightLoopCallback, -1.0, NULL);
+    gHotKey = XPLMRegisterHotKey(XPLM_VK_F8, xplm_DownFlag, "Activate plugin", MyHotKeyCallback, NULL);
+    //XPLMRegisterFlightLoopCallback(MyFlightLoopCallback, -1.0, NULL);
 
     return 1;
+}
+
+
+void MyHotKeyCallback(void *inRefcon) {
+    XPLMRegisterFlightLoopCallback(MyFlightLoopCallback, -1, NULL);
 }
 
 PLUGIN_API void XPluginStop(void) {
